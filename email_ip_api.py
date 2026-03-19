@@ -28,18 +28,13 @@ def extract_emails_from_text(text: str):
     return re.findall(EMAIL_REGEX, text)
 
 def extract_ips_from_text(text: str):
+    words = text.split()
     ips = []
-    for match in re.findall(IPV4_REGEX, text):
+    for word in words:
         try:
-            ipaddress.IPv4Address(match)
-            ips.append({"ip": match, "type": "IPv4"})
-        except:
-            continue
-    for match in re.findall(IPV6_REGEX, text):
-        try:
-            ipaddress.IPv6Address(match)
-            ips.append({"ip": match, "type": "IPv6"})
-        except:
+            ip = ipaddress.ip_address(word)
+            ips.append({"ip": str(ip), "type": "IPv4" if ip.version == 4 else "IPv6"})
+        except ValueError:
             continue
     return ips
 

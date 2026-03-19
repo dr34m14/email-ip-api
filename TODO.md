@@ -1,0 +1,1 @@
+- [x] Step 1: Edit email_ip_api.py - Replace extract_ips_from_text function with ipaddress parsing on split words\n- [x] Step 2: Test the endpoint with curl using shortened IPv6 example
