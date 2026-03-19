@@ -1,12 +1,13 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import re
 import ipaddress
 from email_validator import validate_email, EmailNotValidError
 from bs4 import BeautifulSoup
 import requests
+from datetime import datetime, timedelta
 
-app = FastAPI(title="Email & IP Extractor API")
+app = FastAPI(title="Email & IP Extractor API with API Key")
 
 # -------------------------------
 # Request Models
@@ -18,11 +19,21 @@ class EmailRequest(BaseModel):
     email: str
 
 # -------------------------------
-# Utility functions
+# API Key Config
+# -------------------------------
+# Example API keys with tier, usage counter, and reset timestamp
+API_KEYS = {
+    "FREE-12345": {"tier": "free", "requests": 0, "reset_time": datetime.utcnow()},
+    "PAID-ABCDE": {"tier": "paid", "requests": 0, "reset_time": datetime.utcnow()},
+}
+
+FREE_LIMIT = 50   # requests/day
+PAID_LIMIT = 1000 # requests/day
+
+# -------------------------------
+# Utility Functions
 # -------------------------------
 EMAIL_REGEX = r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
-IPV4_REGEX = r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
-IPV6_REGEX = r"\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b"
 
 def extract_emails_from_text(text: str):
     return re.findall(EMAIL_REGEX, text)
@@ -48,43 +59,61 @@ def extract_emails_from_url(url: str):
         return []
 
 # -------------------------------
+# Middleware: API Key + Rate Limit
+# -------------------------------
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/docs") or path.startswith("/openapi.json"):
+        return await call_next(request)  # allow swagger UI
+    
+    api_key = request.headers.get("X-API-KEY")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API Key")
+    
+    key_data = API_KEYS.get(api_key)
+    if not key_data:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    
+    # Reset daily limit if 24h passed
+    if datetime.utcnow() - key_data["reset_time"] > timedelta(days=1):
+        key_data["requests"] = 0
+        key_data["reset_time"] = datetime.utcnow()
+    
+    # Check rate limit
+    limit = FREE_LIMIT if key_data["tier"] == "free" else PAID_LIMIT
+    if key_data["requests"] >= limit:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    
+    # Increment usage
+    key_data["requests"] += 1
+    
+    response = await call_next(request)
+    return response
+
+# -------------------------------
 # API Endpoints
 # -------------------------------
 
-# 1. Extract emails from text
 @app.post("/extract")
 def extract_emails(req: TextRequest):
     emails = extract_emails_from_text(req.text)
     return {"emails": emails}
 
-# 2. Validate email
 @app.post("/validate")
 def validate_email_address(req: EmailRequest):
     try:
-        v = validate_email(req.email)
-        return {
-            "valid": True,
-            "format_ok": True,
-            "domain_ok": True,
-            "email": v.email
-        }
+        v = validate_email(req.email, check_deliverability=False)  # skip MX check if desired
+        return {"valid": True, "format_ok": True, "domain_ok": True, "email": v.email}
     except EmailNotValidError as e:
-        return {
-            "valid": False,
-            "format_ok": False,
-            "domain_ok": False,
-            "error": str(e)
-        }
+        return {"valid": False, "format_ok": False, "domain_ok": False, "error": str(e)}
 
-# 3. Extract IP addresses
 @app.post("/extract-ip")
 def extract_ips(req: TextRequest):
     ips = extract_ips_from_text(req.text)
     return {"ips": ips}
 
-# 4. Optional: Extract emails from a website URL
 @app.post("/extract-from-url")
 def extract_emails_url(req: TextRequest):
     emails = extract_emails_from_url(req.text)
     return {"emails": emails}
-
